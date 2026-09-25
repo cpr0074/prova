@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import os
 from collections import defaultdict
@@ -13,6 +14,17 @@ from pathlib import Path
 ENTRATA = "entrata"
 USCITA = "uscita"
 TIPI = (ENTRATA, USCITA)
+
+
+def percorso_predefinito() -> Path:
+    """File dei dati: $SPESE_FILE se impostata, altrimenti ~/.spese.json."""
+    return Path(os.environ.get("SPESE_FILE", Path.home() / ".spese.json"))
+
+
+def euro(valore: Decimal) -> str:
+    """Formatta un importo all'italiana: 1234.5 -> "1.234,50 €"."""
+    testo = f"{valore:,.2f}".replace(",", "_").replace(".", ",").replace("_", ".")
+    return f"{testo} €"
 
 
 @dataclass
@@ -51,6 +63,18 @@ def parse_importo(testo: str) -> Decimal:
     if not valore.is_finite() or valore <= 0:
         raise ValueError(f"l'importo deve essere un numero positivo: {testo!r}")
     return valore.quantize(Decimal("0.01"))
+
+
+def parse_data(testo: str) -> date:
+    """Accetta "25/09/2026" (formato italiano) oppure "2026-09-25"."""
+    testo = testo.strip()
+    try:
+        if "/" in testo:
+            giorno, mese, anno = (int(x) for x in testo.split("/"))
+            return date(anno, mese, giorno)
+        return date.fromisoformat(testo)
+    except ValueError:
+        raise ValueError(f"data non valida (formato GG/MM/AAAA): {testo!r}") from None
 
 
 def parse_mese(testo: str) -> tuple[int, int]:
@@ -149,3 +173,11 @@ def riepilogo(movimenti: list[Movimento]) -> Riepilogo:
             per_categoria[m.categoria] += m.importo
     ordinate = dict(sorted(per_categoria.items(), key=lambda kv: kv[1], reverse=True))
     return Riepilogo(entrate, uscite, ordinate)
+
+
+def esporta_csv(movimenti: list[Movimento], destinazione: Path) -> None:
+    with Path(destinazione).open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["id", "data", "tipo", "importo", "categoria", "descrizione"])
+        for m in movimenti:
+            writer.writerow([m.id, m.data.isoformat(), m.tipo, m.importo, m.categoria, m.descrizione])

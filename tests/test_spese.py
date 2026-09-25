@@ -8,7 +8,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from spese.cli import euro, main
-from spese.core import ENTRATA, USCITA, Registro, parse_importo, parse_mese, riepilogo
+from spese.core import ENTRATA, USCITA, Registro, parse_data, parse_importo, parse_mese, riepilogo
 
 
 class TestParsing(unittest.TestCase):
@@ -20,6 +20,13 @@ class TestParsing(unittest.TestCase):
         for testo in ("abc", "0", "-3", "nan", "inf"):
             with self.subTest(testo=testo), self.assertRaises(ValueError):
                 parse_importo(testo)
+
+    def test_data(self):
+        self.assertEqual(parse_data("25/09/2026"), date(2026, 9, 25))
+        self.assertEqual(parse_data("2026-09-25"), date(2026, 9, 25))
+        for testo in ("31/02/2026", "ieri", "25-09"):
+            with self.subTest(testo=testo), self.assertRaises(ValueError):
+                parse_data(testo)
 
     def test_mese(self):
         self.assertEqual(parse_mese("2026-09"), (2026, 9))

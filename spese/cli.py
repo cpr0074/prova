@@ -3,22 +3,24 @@
 from __future__ import annotations
 
 import argparse
-import csv
-import os
 import sys
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
-from spese.core import ENTRATA, TIPI, USCITA, Registro, parse_importo, parse_mese, riepilogo
-
-FILE_PREDEFINITO = Path.home() / ".spese.json"
-
-
-def euro(valore: Decimal) -> str:
-    """Formatta un importo all'italiana: 1234.5 -> "1.234,50 €"."""
-    testo = f"{valore:,.2f}".replace(",", "_").replace(".", ",").replace("_", ".")
-    return f"{testo} €"
+from spese.core import (
+    ENTRATA,
+    TIPI,
+    USCITA,
+    Registro,
+    esporta_csv,
+    euro,
+    parse_data,
+    parse_importo,
+    parse_mese,
+    percorso_predefinito,
+    riepilogo,
+)
 
 
 def _tipo_importo(testo: str) -> Decimal:
@@ -30,9 +32,9 @@ def _tipo_importo(testo: str) -> Decimal:
 
 def _tipo_data(testo: str) -> date:
     try:
-        return date.fromisoformat(testo)
-    except ValueError:
-        raise argparse.ArgumentTypeError(f"data non valida (formato AAAA-MM-GG): {testo!r}") from None
+        return parse_data(testo)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from None
 
 
 def _tipo_mese(testo: str) -> tuple[int, int]:
@@ -47,17 +49,18 @@ def crea_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--file",
         type=Path,
-        default=Path(os.environ.get("SPESE_FILE", FILE_PREDEFINITO)),
+        default=percorso_predefinito(),
         help="file JSON dei dati (predefinito: $SPESE_FILE o ~/.spese.json)",
     )
     sub = parser.add_subparsers(dest="comando", required=True)
+    sub.add_parser("finestra", help="apre l'interfaccia grafica")
 
     for tipo in TIPI:
         p = sub.add_parser(tipo, help=f"registra una {tipo}")
         p.add_argument("importo", type=_tipo_importo, help="es. 12.50 oppure 12,50")
         p.add_argument("categoria", help="es. cibo, affitto, stipendio")
         p.add_argument("-d", "--descrizione", default="")
-        p.add_argument("--data", type=_tipo_data, help="AAAA-MM-GG (predefinito: oggi)")
+        p.add_argument("--data", type=_tipo_data, help="GG/MM/AAAA (predefinito: oggi)")
 
     filtri = argparse.ArgumentParser(add_help=False)
     filtri.add_argument("--mese", type=_tipo_mese, help="AAAA-MM")
@@ -126,11 +129,7 @@ def cmd_elimina(reg: Registro, args) -> int:
 
 def cmd_esporta(reg: Registro, args) -> int:
     movimenti = reg.filtra(args.mese, args.categoria, args.tipo)
-    with args.destinazione.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(["id", "data", "tipo", "importo", "categoria", "descrizione"])
-        for m in movimenti:
-            writer.writerow([m.id, m.data.isoformat(), m.tipo, m.importo, m.categoria, m.descrizione])
+    esporta_csv(movimenti, args.destinazione)
     print(f"Esportati {len(movimenti)} movimenti in {args.destinazione}.")
     return 0
 
@@ -147,5 +146,10 @@ COMANDI = {
 
 def main(argv: list[str] | None = None) -> int:
     args = crea_parser().parse_args(argv)
+    if args.comando == "finestra":
+        from spese.gui import main as avvia_finestra
+
+        avvia_finestra(args.file)
+        return 0
     reg = Registro(args.file)
     return COMANDI[args.comando](reg, args)
