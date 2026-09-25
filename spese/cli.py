@@ -1,0 +1,151 @@
+"""Interfaccia da riga di comando: python -m spese <comando> ..."""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import os
+import sys
+from datetime import date
+from decimal import Decimal
+from pathlib import Path
+
+from spese.core import ENTRATA, TIPI, USCITA, Registro, parse_importo, parse_mese, riepilogo
+
+FILE_PREDEFINITO = Path.home() / ".spese.json"
+
+
+def euro(valore: Decimal) -> str:
+    """Formatta un importo all'italiana: 1234.5 -> "1.234,50 €"."""
+    testo = f"{valore:,.2f}".replace(",", "_").replace(".", ",").replace("_", ".")
+    return f"{testo} €"
+
+
+def _tipo_importo(testo: str) -> Decimal:
+    try:
+        return parse_importo(testo)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from None
+
+
+def _tipo_data(testo: str) -> date:
+    try:
+        return date.fromisoformat(testo)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"data non valida (formato AAAA-MM-GG): {testo!r}") from None
+
+
+def _tipo_mese(testo: str) -> tuple[int, int]:
+    try:
+        return parse_mese(testo)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from None
+
+
+def crea_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="spese", description="Gestore di spese personali.")
+    parser.add_argument(
+        "--file",
+        type=Path,
+        default=Path(os.environ.get("SPESE_FILE", FILE_PREDEFINITO)),
+        help="file JSON dei dati (predefinito: $SPESE_FILE o ~/.spese.json)",
+    )
+    sub = parser.add_subparsers(dest="comando", required=True)
+
+    for tipo in TIPI:
+        p = sub.add_parser(tipo, help=f"registra una {tipo}")
+        p.add_argument("importo", type=_tipo_importo, help="es. 12.50 oppure 12,50")
+        p.add_argument("categoria", help="es. cibo, affitto, stipendio")
+        p.add_argument("-d", "--descrizione", default="")
+        p.add_argument("--data", type=_tipo_data, help="AAAA-MM-GG (predefinito: oggi)")
+
+    filtri = argparse.ArgumentParser(add_help=False)
+    filtri.add_argument("--mese", type=_tipo_mese, help="AAAA-MM")
+    filtri.add_argument("--categoria")
+    filtri.add_argument("--tipo", choices=TIPI)
+
+    sub.add_parser("lista", parents=[filtri], help="mostra i movimenti")
+    sub.add_parser("riepilogo", parents=[filtri], help="totali e spese per categoria")
+
+    p = sub.add_parser("elimina", help="elimina un movimento per ID")
+    p.add_argument("id", type=int)
+
+    p = sub.add_parser("esporta", parents=[filtri], help="esporta i movimenti in CSV")
+    p.add_argument("destinazione", type=Path)
+
+    return parser
+
+
+def cmd_aggiungi(reg: Registro, args) -> int:
+    mov = reg.aggiungi(args.comando, args.importo, args.categoria, args.data, args.descrizione)
+    reg.salva()
+    print(f"Aggiunta {mov.tipo} #{mov.id}: {euro(mov.importo)} [{mov.categoria}] del {mov.data}")
+    return 0
+
+
+def cmd_lista(reg: Registro, args) -> int:
+    movimenti = reg.filtra(args.mese, args.categoria, args.tipo)
+    if not movimenti:
+        print("Nessun movimento trovato.")
+        return 0
+    print(f"{'ID':>4}  {'DATA':<10}  {'TIPO':<7}  {'IMPORTO':>12}  {'CATEGORIA':<14}  DESCRIZIONE")
+    for m in movimenti:
+        segno = "+" if m.tipo == ENTRATA else "-"
+        print(
+            f"{m.id:>4}  {m.data.isoformat():<10}  {m.tipo:<7}  "
+            f"{segno + euro(m.importo):>12}  {m.categoria:<14}  {m.descrizione}"
+        )
+    return 0
+
+
+def cmd_riepilogo(reg: Registro, args) -> int:
+    r = riepilogo(reg.filtra(args.mese, args.categoria, args.tipo))
+    print(f"Entrate: {euro(r.entrate):>14}")
+    print(f"Uscite:  {euro(r.uscite):>14}")
+    print(f"Saldo:   {euro(r.saldo):>14}")
+    if r.per_categoria:
+        print("\nUscite per categoria:")
+        larghezza = max(len(c) for c in r.per_categoria)
+        for categoria, totale in r.per_categoria.items():
+            quota = totale / r.uscite * 100
+            barra = "█" * round(quota / 5)
+            print(f"  {categoria:<{larghezza}}  {euro(totale):>12}  {quota:5.1f}%  {barra}")
+    return 0
+
+
+def cmd_elimina(reg: Registro, args) -> int:
+    try:
+        mov = reg.elimina(args.id)
+    except KeyError:
+        print(f"Errore: nessun movimento con ID {args.id}.", file=sys.stderr)
+        return 1
+    reg.salva()
+    print(f"Eliminato movimento #{mov.id} ({mov.tipo} di {euro(mov.importo)}, {mov.categoria}).")
+    return 0
+
+
+def cmd_esporta(reg: Registro, args) -> int:
+    movimenti = reg.filtra(args.mese, args.categoria, args.tipo)
+    with args.destinazione.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["id", "data", "tipo", "importo", "categoria", "descrizione"])
+        for m in movimenti:
+            writer.writerow([m.id, m.data.isoformat(), m.tipo, m.importo, m.categoria, m.descrizione])
+    print(f"Esportati {len(movimenti)} movimenti in {args.destinazione}.")
+    return 0
+
+
+COMANDI = {
+    ENTRATA: cmd_aggiungi,
+    USCITA: cmd_aggiungi,
+    "lista": cmd_lista,
+    "riepilogo": cmd_riepilogo,
+    "elimina": cmd_elimina,
+    "esporta": cmd_esporta,
+}
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = crea_parser().parse_args(argv)
+    reg = Registro(args.file)
+    return COMANDI[args.comando](reg, args)
